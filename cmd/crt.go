@@ -47,11 +47,11 @@ Options:
   -e        Exclude Expired Certificates [Default: False]
   -s        Enumerate Subdomains [Default: False]
   -c <int>  Number of concurrent lookups for Bulk Mode [Default: 5]
-  -d <int>  Delay between requests in milliseconds [Default: 500)
+  -d <int>  Delay between requests in milliseconds [Default: 500]
   -i <path> Input file containing domain names (one per line) for bulk lookup
-  -l <int>  Limit the number of results (more results take more time) [Default: 10)
+  -l <int>  Limit the number of results (more results take more time) [Default: 10]
   -o <path> Output file path [Default: STDOUT]
-  -r <int>  Number of retries for failed requests [Default: 3)  
+  -r <int>  Number of retries for failed requests [Default: 3]
   -csv      Turn results to CSV
   -json     Turn results to JSON
   -jsonl    Turn results to JSONL (JSON Lines)
