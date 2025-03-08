@@ -41,6 +41,7 @@ NOTE:
   → Each connection is opened only for 5 Mins, with 3 Retries
   → NRD Indicator needs at least 3 Results to be Accurate
   → To pipe to other Tools, use -q 2>/dev/null | ${TOOL}
+  → For Bulk mode, Always use -o to prevent Data Loss
 
 Options:
   -e        Exclude Expired Certificates [Default: False]
@@ -112,7 +113,15 @@ func Execute() {
 			log.Fatalf("❌ Failed to create directories: %v", err)
 		}
 
-        logf("💾 Output will be saved to: %s\n", absFilename)
+    // Check if file is not empty
+    if fileInfo, err := os.Stat(absFilename); err == nil && fileInfo.Size() > 0 {
+    	logf("⚠️ Warning: File %s is not empty. Clearing contents.\n", absFilename)
+    	if err := os.Truncate(absFilename, 0); err != nil {
+    		log.Fatalf("❌ Failed to clear file contents: %v", err)
+    	}
+		}
+
+    logf("💾 Output will be saved to: %s\n", absFilename)
     } else {
         absFilename = ""
     }
@@ -266,7 +275,13 @@ func processResults(res result.Printer, domain string) {
 			var items []json.RawMessage
 			if err := json.Unmarshal(jsonData, &items); err == nil {
 				for _, item := range items {
-					jsonlResults = append(jsonlResults, item)
+					// Use Marshal to ensure each item is compact (no newlines)
+					compactJSON, err := json.Marshal(item)
+					if err == nil {
+						jsonlResults = append(jsonlResults, compactJSON)
+					} else {
+						logf("❌ Failed to marshal JSON item: %v\n", err)
+					}
 				}
 			} else {
 				logf("❌ Invalid JSON array for %s: %v\n", domain, err)
@@ -294,18 +309,24 @@ func processResults(res result.Printer, domain string) {
 			defer file.Close()
 			
 			if *jsonlOut {
-				// For JSONL, write each item on a new line
-				var items []json.RawMessage
-				if err := json.Unmarshal(jsonData, &items); err == nil {
-					for _, item := range items {
-						if _, err := file.Write(item); err != nil {
-							logf("❌ Failed to write to file: %v\n", err)
-						}
-						if _, err := file.Write([]byte("\n")); err != nil {
-							logf("❌ Failed to write newline to file: %v\n", err)
-						}
-					}
-				}
+       // For JSONL, write each item on a new line
+       var items []json.RawMessage
+       if err := json.Unmarshal(jsonData, &items); err == nil {
+         for _, item := range items {
+           // Use Marshal to ensure each item is compact (no newlines)
+           compactJSON, err := json.Marshal(item)
+           if err != nil {
+             logf("❌ Failed to marshal JSON item: %v\n", err)
+             continue
+           }
+           if _, err := file.Write(compactJSON); err != nil {
+             logf("❌ Failed to write to file: %v\n", err)
+           }
+           if _, err := file.Write([]byte("\n")); err != nil {
+             logf("❌ Failed to write newline to file: %v\n", err)
+           }
+         }
+       }
 			} else if *jsonOut {
 				// For JSON, we'll write a complete array at the end in outputResults
 			}
@@ -380,11 +401,11 @@ func outputResults() {
 				return
 			}
 			fmt.Println(string(combinedJSON))
-		} else if *jsonlOut && len(jsonlResults) > 0 {
-			// Output each JSON result on a separate line
-			for _, result := range jsonlResults {
-				fmt.Println(string(result))
-			}
+    } else if *jsonlOut && len(jsonlResults) > 0 {
+      // Output each JSON result on a separate line
+      for _, result := range jsonlResults {
+       fmt.Println(string(result))
+      }
 		} else if *csvOut && csvResults.Len() > 0 {
 			fmt.Print(csvResults.String())
 		} else if tableResults.Len() > 0 {
