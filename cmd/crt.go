@@ -55,15 +55,16 @@ Options:
   -csv      Turn results to CSV
   -json     Turn results to JSON
   -jsonl    Turn results to JSONL (JSON Lines)
-  -q        Quiet mode (Hide progress messages, only show results)
+  -q        Quiet mode (Hide progress messages, only show results) [Bulk Mode Only]
 
 Examples:
-  crt example.com
-  crt -s -e example.com
-  crt -json -o logs.json example.com
-  crt -l 15 -csv -o logs.csv example.com
+  crt "example.com"
+  crt -s -e "example.com"
+  crt -json -o logs.json "example.com"
+  crt -l 15 -csv -o logs.csv "example.com"
+  crt -jsonl -q -s "example.com" 2>/dev/null | jq -r ".subdomain"
   crt -i domains.txt -s -e -json -o results.json
-  crt -i domains.txt -c 3 -d 0 -jsonl
+  crt -i domains.txt -c 100 -d 10 -jsonl
 `
 
 // Shared buffers for collecting results
