@@ -10,16 +10,18 @@ soar add 'crt#github.com.pkgforge-security.crt'
 ### 🧰 Usage
 ```mathematica
 ❯ crt --help
+
 Usage: crt [options...] <domain name>
 
 NOTE:
-  → Options must come before Input
-  → Each connection is opened only for 5 mins, with 3 Retries
+  → Options must come before Input (Unless using -i)
+  → Each connection is opened only for 60 Seconds, with 3 Retries
   → NRD Indicator needs at least 3 Results to be Accurate
+  → To pipe to other Tools, use -q 2>/dev/null | ${TOOL}
 
 Options:
-  -e        Exclude Expired Certificates
-  -s        Enumerate Subdomains
+  -e        Exclude Expired Certificates [Default: False]
+  -s        Enumerate Subdomains [Default: False]
   -c <int>  Number of concurrent lookups for Bulk Mode [Default: 5]
   -d <int>  Delay between requests in milliseconds [Default: 500)
   -i <path> Input file containing domain names (one per line) for bulk lookup
@@ -38,5 +40,4 @@ Examples:
   crt -l 15 -csv -o logs.csv example.com
   crt -i domains.txt -s -e -json -o results.json
   crt -i domains.txt -c 3 -d 0 -jsonl
-
 ```
