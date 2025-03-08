@@ -15,7 +15,7 @@ Usage: crt [options...] <domain name>
 
 NOTE:
   → Options must come before Input (Unless using -i)
-  → Each connection is opened only for 60 Seconds, with 3 Retries
+  → Each connection is opened only for 5 Mins, with 3 Retries
   → NRD Indicator needs at least 3 Results to be Accurate
   → To pipe to other Tools, use -q 2>/dev/null | ${TOOL}
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ var (
 
 	maxRetries   = 3
 	initialDelay = 2 * time.Second
-	maxDelay     = 10 * time.Second // Prevent excessive backoff
+	maxDelay     = 10 * time.Second
 )
 
 type Repository struct {
@@ -36,11 +37,11 @@ func logf(format string, args ...interface{}) {
 }
 
 func New() (*Repository, error) {
-	startTime := time.Now() // Track start time
+	startTime := time.Now()
 
-	db, err := sql.Open(driver, login+" connect_timeout=5")
+	db, err := sql.Open(driver, login+" connect_timeout=20")
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize DB connection: %w", err)
+		return nil, fmt.Errorf("Failed to Initialize DB Connection: %w", err)
 	}
 
 	db.SetConnMaxLifetime(5 * time.Minute)
@@ -56,21 +57,34 @@ func New() (*Repository, error) {
 		cancel()
 
 		if lastErr == nil {
-			logf("✅ Connected (%v)\n", time.Since(startTime))
+			logf("📡 Connected ==> [%s] (%v)\n", login, time.Since(startTime))
 			return &Repository{db}, nil
 		}
 
+		logf("⚠️ Connection attempt %d Failed: %v\n", retries+1, lastErr)
+
 		if retries < maxRetries-1 {
-			time.Sleep(delay)
-			if delay < maxDelay {
-				delay *= 2
-			}
+			// Add jitter (randomized wait time to avoid synchronized retries)
+			jitter := time.Duration(rand.Int63n(int64(delay / 2)))
+			sleepTime := delay + jitter
+			time.Sleep(sleepTime)
+
+			// Ensure delay does not exceed maxDelay
+			delay = min(delay*2, maxDelay)
 		}
 	}
 
 	db.Close()
 	logf("❌ Connection Failed after %v\n", time.Since(startTime))
 	return nil, fmt.Errorf("Failed to connect to database after %d attempts: %w", maxRetries, lastErr)
+}
+
+// min returns the smaller of two durations
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // sanitizeDomain ensures the domain is safe for SQL queries by escaping `%`
@@ -82,7 +96,7 @@ func (r *Repository) GetCertLogs(domain string, expired bool, limit int) (result
 	startTime := time.Now()
 
 	if r.db == nil {
-		return nil, errors.New("database connection is nil")
+		return nil, errors.New("Database Connection is nil")
 	}
 
 	domain = sanitizeDomain(domain)
@@ -95,7 +109,7 @@ func (r *Repository) GetCertLogs(domain string, expired bool, limit int) (result
 
 	rows, err := r.db.Query(stmt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query db: %w", err)
+		return nil, fmt.Errorf("Failed to query db: %w", err)
 	}
 	defer rows.Close()
 
@@ -120,7 +134,7 @@ func (r *Repository) GetCertLogs(domain string, expired bool, limit int) (result
 			&serialNumber,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+			return nil, fmt.Errorf("Failed to scan row: %w", err)
 		}
 
 		// Explicitly handle NULL values

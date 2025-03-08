@@ -8,14 +8,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"github.com/pkgforge-security/crt/repository"
 	"github.com/pkgforge-security/crt/result"
 )
 
 var (
+	initTime time.Time
 	concurrent   = flag.Int("c", 5, "")
 	csvOut       = flag.Bool("csv", false, "")
 	expired      = flag.Bool("e", false, "")
@@ -34,7 +38,7 @@ var usage = `Usage: crt [options...] <domain name>
 
 NOTE: 
   → Options must come before Input (Unless using -i)
-  → Each connection is opened only for 60 Seconds, with 3 Retries
+  → Each connection is opened only for 5 Mins, with 3 Retries
   → NRD Indicator needs at least 3 Results to be Accurate
   → To pipe to other Tools, use -q 2>/dev/null | ${TOOL}
 
@@ -72,6 +76,13 @@ var (
 	jsonlResults []json.RawMessage
 	tableResults bytes.Buffer
 	csvResults   bytes.Buffer
+	
+	//Realpath for Output
+	absFilename string
+
+	// Flag to track if we're shutting down due to interrupt
+	shuttingDown bool
+	shutdownMux  sync.Mutex
 )
 
 // logf prints messages only if quiet mode is disabled
@@ -82,8 +93,32 @@ func logf(format string, args ...interface{}) {
 }
 
 func Execute() {
+	initTime = time.Now()
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
+	
+	// Realpath to file
+    if *filename != "" {
+        absPath, err := filepath.Abs(*filename)
+        if err != nil {
+            absFilename = *filename // Fallback to original
+        } else {
+            absFilename = absPath
+        }
+
+		// Extract directory path and create missing directories
+		dir := filepath.Dir(absFilename)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Fatalf("❌ Failed to create directories: %v", err)
+		}
+
+        logf("💾 Output will be saved to: %s\n", absFilename)
+    } else {
+        absFilename = ""
+    }
+
+	// Set up signal handling for graceful shutdown
+	setupSignalHandling()
 	
 	// Validate incompatible output formats
 	if (*jsonOut && *csvOut) || (*jsonOut && *jsonlOut) || (*csvOut && *jsonlOut) {
@@ -125,13 +160,50 @@ func Execute() {
 	outputResults()
 }
 
+// setupSignalHandling sets up handlers for interrupt signals
+func setupSignalHandling() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-c
+		logf("\n⚠️ Interrupt received. Saving results and shutting down...\n")
+		
+		shutdownMux.Lock()
+		shuttingDown = true
+		shutdownMux.Unlock()
+		
+		// Save any collected results
+		outputResults()
+		
+		os.Exit(130) // Standard exit code for interrupt
+	}()
+}
+
+// isShuttingDown checks if we're in shutdown mode
+func isShuttingDown() bool {
+	shutdownMux.Lock()
+	defer shutdownMux.Unlock()
+	return shuttingDown
+}
+
 func lookupDomainWithRepo(repo *repository.Repository, domain string) error {
 	// Safety check to prevent index errors with some certificates 
 	if domain == "" {
 		return fmt.Errorf("❌ Empty Domain Name")
 	}
 	
+	// Don't start new lookups if we're shutting down
+	if isShuttingDown() {
+		return fmt.Errorf("shutdown in progress")
+	}
+	
 	for attempt := 0; attempt <= *retryCount; attempt++ {
+		// Check for shutdown between retry attempts
+		if attempt > 0 && isShuttingDown() {
+			return fmt.Errorf("interrupted")
+		}
+		
 		// Add delay between retries
 		if attempt > 0 {
 			time.Sleep(time.Duration(*requestDelay) * time.Millisecond)
@@ -298,7 +370,7 @@ func processResults(res result.Printer, domain string) {
 }
 
 func outputResults() {
-	// Only output if no filename is specified
+	// Only output to stdout if no filename is specified
 	if *filename == "" {
 		if *jsonOut && len(jsonResults) > 0 {
 			// Create a single JSON array with all results
@@ -326,11 +398,35 @@ func outputResults() {
 			return
 		}
 		
+		// Ensure the directory exists before writing the file
+		err = os.MkdirAll(filepath.Dir(*filename), 0755)
+		if err != nil {
+			logf("❌ Failed to create directories: %v\n", err)
+			return
+		}
+
 		// Write the complete JSON array to the file
+		fileMutex.Lock()
+		defer fileMutex.Unlock()
+
 		if err := os.WriteFile(*filename, combinedJSON, 0644); err != nil {
 			logf("❌ Failed to write JSON to file: %v\n", err)
+			return
 		}
 	}
+
+	// Always log if results were saved to a file
+	if *filename != "" {
+		if isShuttingDown() {
+			logf("✅ Saved partial results to %s before shutdown\n", absFilename)
+		} else {
+			logf("✅ Saved Results to %s\n", absFilename)
+		}
+	}
+
+	// Log time elapsed
+	elapsed := time.Since(initTime)
+	fmt.Fprintf(os.Stderr, "⌚ Finished in %s\n", elapsed.Round(time.Millisecond))
 }
 
 func performBulkLookup() {
@@ -385,24 +481,54 @@ func performBulkLookup() {
 	semaphore := make(chan struct{}, *concurrent)
 	errorChannel := make(chan error, len(domains))
 	
+	// Track processed domains for status updates
+	var processedCount int32
+	var processedMutex sync.Mutex
+	totalDomains := len(domains)
+	
 	if !*quietMode {
-		fmt.Fprintf(os.Stderr, "[+] Processing %d Domains (Concurrency:%d, Delay:%dms, Retries:%d) [Limit:%d]\n", 
+		fmt.Fprintf(os.Stderr, "ℹ️ Processing %d Domains (Concurrency:%d, Delay:%dms, Retries:%d) [Limit:%d]\n", 
 			len(domains), *concurrent, *requestDelay, *retryCount, *limit)
 	}
 	
 	for _, domain := range domains {
+		// Don't start new lookups if we're shutting down
+		if isShuttingDown() {
+			break
+		}
+		
 		wg.Add(1)
 		semaphore <- struct{}{} // Acquire semaphore
 		go func(d string) {
 			defer wg.Done()
 			defer func() { <-semaphore }() // Release semaphore
 			
+			// Skip if we're shutting down
+			if isShuttingDown() {
+				return
+			}
+			
 			// Add configured delay between requests
 			time.Sleep(time.Duration(*requestDelay) * time.Millisecond)
 			
 			if err := lookupDomainWithRepo(repo, d); err != nil {
-				errorChannel <- err
-				logf("❌ Error processing %s: %v\n", d, err)
+				// Don't report errors during shutdown
+				if !isShuttingDown() {
+					errorChannel <- err
+					logf("❌ Error processing %s: %v\n", d, err)
+				}
+			}
+			
+			// Update progress counter
+			processedMutex.Lock()
+			processedCount++
+			progress := processedCount
+			processedMutex.Unlock()
+			
+			// Show progress periodically
+			if !*quietMode && !isShuttingDown() && progress%10 == 0 {
+				fmt.Fprintf(os.Stderr, "⏱️ Progress: %d/%d domains processed (%.1f%%)\n", 
+					progress, totalDomains, float64(progress)/float64(totalDomains)*100)
 			}
 		}(domain)
 	}
@@ -413,6 +539,10 @@ func performBulkLookup() {
 	// Check if there were any errors
 	errCount := 0
 	for err := range errorChannel {
+		if isShuttingDown() {
+			// Don't report errors during shutdown
+			continue
+		}
 		logf("❌ Error: %v\n", err)
 		errCount++
 	}
@@ -420,11 +550,12 @@ func performBulkLookup() {
 	// Output final results
 	outputResults()
 	
-	if !*quietMode {
+	if !*quietMode && !isShuttingDown() {
+		elapsed := time.Since(initTime)
 		if errCount > 0 {
-			fmt.Fprintf(os.Stderr, "ⓘ Bulk lookup completed with %d errors.\n", errCount)
+			fmt.Fprintf(os.Stderr, "⚠️ Bulk lookup completed with %d errors in %s.\n", errCount, elapsed.Round(time.Millisecond))
 		} else {
-			fmt.Fprintln(os.Stderr, "\n✅ Bulk lookup completed successfully.")
+			fmt.Fprintf(os.Stderr, "\n✅ Bulk lookup completed successfully in %s.\n", elapsed.Round(time.Millisecond))
 		}
 	}
 }
